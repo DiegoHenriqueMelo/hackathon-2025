@@ -13,7 +13,7 @@ app.use(cors({ origin: "http://localhost:5173" }));
 
 export const connectServer = async (PORT: number) => {
   app.listen(PORT, () => {
-    console.log("Server is running on port 3333");
+    console.log(`Server is running on port ${PORT}`);
   });
 
   // ROTA LOGIN
