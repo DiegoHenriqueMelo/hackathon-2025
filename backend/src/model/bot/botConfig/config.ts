@@ -132,6 +132,7 @@ const client = new OpenAI({
  */
 
 import { getCurrentContext } from "../../../database/admin/contextDatabase.js";
+import { generateAgendamentoProtocol, generateAutorizacaoProtocol, generateAtendimentoProtocol } from "../../../utils/protocolGenerator.js";
 
 // Dados mock para protocolo
 const protocolo = [
@@ -459,6 +460,22 @@ Restrições de moderação de conteúdo:
 IMPORTANTE - COMO IDENTIFICAR A INTENÇÃO DO USUÁRIO:
 
 📅 AGENDAMENTO (marcar consulta):
+Quando o usuário quiser agendar, SEMPRE peça TODAS as informações de uma vez:
+
+"Para agendar sua consulta, preciso das seguintes informações:
+1. Qual especialidade você precisa? (Cardiologia, Pediatria, Dermatologia, etc.)
+2. Qual cidade você prefere? (São Paulo, Rio de Janeiro, Belo Horizonte)
+3. Qual seu nome completo?
+4. Qual seu CPF?
+5. Tem preferência de data/horário?"
+
+Após receber TODAS as informações:
+- Mostre médicos disponíveis da especialidade
+- Confirme o agendamento APENAS UMA VEZ
+- NÃO peça confirmação adicional
+- Finalize imediatamente com protocolo aleatório: AGD + 6 dígitos (ex: AGD123456)
+
+Exemplos de frases que indicam agendamento:
 - "Quero agendar uma consulta"
 - "Preciso marcar com cardiologista"
 - "Quando posso consultar?"
@@ -476,10 +493,25 @@ IMPORTANTE - COMO IDENTIFICAR A INTENÇÃO DO USUÁRIO:
 - "O que precisa de autorização neste documento?"
 - Qualquer mensagem com arquivo anexado
 
+DICAS DE SAÚDE PERMITIDAS:
+Você PODE e DEVE responder sobre:
+- Sintomas de doenças (diabetes, hipertensão, gripe, etc.)
+- Prevenção e cuidados básicos
+- Orientações gerais sobre medicamentos
+- Hábitos saudáveis e alimentação
+- Primeiros socorros básicos
+- Quando procurar um médico
+- Informações sobre exames comuns
+- Dicas de bem-estar e saúde mental
+
 SEMPRE identifique PRIMEIRO qual é a intenção antes de responder!
 
+PROTOCOLOS ALEATÓRIOS:
+- Para agendamentos: AGD + 6 dígitos (ex: AGD789123)
+- Para autorizações: AUT + 6 dígitos (ex: AUT456789)
+- Para outros atendimentos: ATD + 6 dígitos (ex: ATD321654)
+
 RESTRIÇÕES:
-- Não forneça informações médicas ou diagnósticos
 - Não participe de discussões não relacionadas à saúde/atendimento
 - Sempre mantenha tom profissional e empático
 - Para dúvidas fora do escopo, redirecione educadamente para tópicos relevantes
@@ -487,12 +519,15 @@ RESTRIÇÕES:
 RESTRIÇÕES:
 - Seja sempre educado e profissional
 - Para dúvidas fora do escopo de saúde, redirecione educadamente
-- Sempre confirme dados antes de finalizar agendamentos
+- PEÇA TODAS as informações de agendamento DE UMA VEZ (nome, CPF, especialidade, cidade, preferência de data)
+- Confirme dados APENAS UMA VEZ antes de finalizar agendamentos
+- NÃO peça múltiplas confirmações
 - IMPORTANTE: Agendamentos são REAIS e ficam salvos no banco de dados
 - Consultas só podem ser marcadas para os PRÓXIMOS 30 DIAS
 - Pacientes podem consultar seus agendamentos informando o CPF
 - Médicos podem ver suas consultas no calendário do sistema
 - Horário de atendimento: 08:00 às 12:00 (manhã)
+- SEMPRE gere protocolo aleatório ao finalizar qualquer atendimento
 - SEMPRE leia documentos anexados COMPLETAMENTE antes de responder
 - Para documentos, identifique TODOS os procedimentos mencionados e verifique cada um`
 });
@@ -577,12 +612,28 @@ export const sendMessage = async (message: string, sessionId: string): Promise<s
             sessionCache.set(sessionId, sessionData);
           }
           
-          // Se foi salvo um agendamento real, substituir protocolo na resposta
-          if (protocoloReal && path.includes('protocolo')) {
-            return path.replace(/AGD\d+/g, protocoloReal);
+          // Substituir protocolos genéricos por protocolos reais
+          let finalResponse = path;
+          
+          // Substituir protocolos de agendamento
+          if (finalResponse.includes('AGD') || finalResponse.toLowerCase().includes('agendamento')) {
+            const protocoloAgendamento = protocoloReal || generateAgendamentoProtocol();
+            finalResponse = finalResponse.replace(/AGD\d{6}/g, protocoloAgendamento);
           }
           
-          return path;
+          // Substituir protocolos de autorização
+          if (finalResponse.includes('AUT') || finalResponse.toLowerCase().includes('autoriza')) {
+            const protocoloAutorizacao = generateAutorizacaoProtocol();
+            finalResponse = finalResponse.replace(/AUT\d{6}/g, protocoloAutorizacao);
+          }
+          
+          // Substituir protocolos de atendimento geral
+          if (finalResponse.includes('ATD') || finalResponse.toLowerCase().includes('protocolo')) {
+            const protocoloAtendimento = generateAtendimentoProtocol();
+            finalResponse = finalResponse.replace(/ATD\d{6}/g, protocoloAtendimento);
+          }
+          
+          return finalResponse;
         }
       }
       
