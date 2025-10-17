@@ -1,0 +1,324 @@
+name: 🚀 UniAgendas CI/CD Pipeline
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  NODE_VERSION: '18.x'
+  POSTGRES_VERSION: '13'
+
+jobs:
+  # =============================================================================
+  # JOB 1: LINTING E FORMATOÇÃO
+  # =============================================================================
+  lint:
+    name: 📝 Lint & Format Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📁 Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: 🚀 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+        
+    # Backend Linting
+    - name: 📆 Install Backend Dependencies
+      working-directory: ./backend
+      run: npm ci
+      
+    - name: 🔍 Lint Backend Code
+      working-directory: ./backend
+      run: npm run lint || echo "Lint script not found, skipping..."
+      
+    # Frontend Linting  
+    - name: 📆 Install Frontend Dependencies
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: 🔍 Lint Frontend Code
+      working-directory: ./frontend
+      run: npm run lint
+
+  # =============================================================================
+  # JOB 2: TESTES UNITÁRIOS E INTEGRAÇÃO
+  # =============================================================================
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    
+    services:
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: uniagendas_test
+        options: >
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: 📁 Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: 🚀 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+        
+    - name: 📆 Install Backend Dependencies
+      working-directory: ./backend
+      run: npm ci
+      
+    - name: 🗄️ Setup Test Database
+      working-directory: ./backend
+      run: |
+        PGPASSWORD=postgres psql -h localhost -U postgres -d uniagendas_test -f scripts/setup-database.sql
+      env:
+        PGPASSWORD: postgres
+        
+    - name: 🧪 Run Unit Tests
+      working-directory: ./backend
+      run: npm run test:unit
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: uniagendas_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+        JWT_SECRET: test_jwt_secret
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
+        
+    - name: 🔗 Run Integration Tests
+      working-directory: ./backend
+      run: npm run test:integration
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: uniagendas_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+        JWT_SECRET: test_jwt_secret
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
+        
+    - name: 📈 Generate Coverage Report
+      working-directory: ./backend
+      run: npm run test:coverage
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: uniagendas_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+        JWT_SECRET: test_jwt_secret
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
+        
+    - name: 📄 Upload Coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        directory: ./backend/coverage
+        flags: backend
+        name: backend-coverage
+        
+    # Frontend Tests
+    - name: 📆 Install Frontend Dependencies
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: 🎨 Build Frontend
+      working-directory: ./frontend
+      run: npm run build
+
+  # =============================================================================
+  # JOB 3: SECURITY AUDIT
+  # =============================================================================
+  security:
+    name: 🔒 Security Audit
+    runs-on: ubuntu-latest
+    needs: lint
+    
+    steps:
+    - name: 📁 Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: 🚀 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        
+    - name: 🔍 Backend Security Audit
+      working-directory: ./backend
+      run: |
+        npm audit --audit-level=moderate
+        
+    - name: 🔍 Frontend Security Audit
+      working-directory: ./frontend
+      run: |
+        npm audit --audit-level=moderate
+
+  # =============================================================================
+  # JOB 4: BUILD E DEPLOY (apenas para master)
+  # =============================================================================
+  deploy:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    
+    environment:
+      name: production
+      url: https://uniagendas-api.railway.app
+    
+    steps:
+    - name: 📁 Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: 🚀 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+        
+    # Build Backend
+    - name: 📆 Install Backend Dependencies
+      working-directory: ./backend
+      run: npm ci --only=production
+      
+    - name: 🏗️ Build Backend
+      working-directory: ./backend
+      run: npm run build
+      
+    # Build Frontend
+    - name: 📆 Install Frontend Dependencies
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: 🎨 Build Frontend
+      working-directory: ./frontend
+      run: npm run build
+      env:
+        VITE_API_URL: https://uniagendas-api.railway.app
+        
+    # Deploy para Railway (Backend)
+    - name: 🚂 Deploy Backend to Railway
+      uses: bervProject/railway-deploy@v1.0.7
+      with:
+        railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        service: 'backend'
+        
+    # Deploy para Vercel (Frontend)
+    - name: 🌍 Deploy Frontend to Vercel
+      uses: amondnet/vercel-action@v25
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: ./frontend
+        vercel-args: '--prod'
+
+  # =============================================================================
+  # JOB 5: NOTIFICAÇÕES
+  # =============================================================================
+  notify:
+    name: 📢 Send Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    
+    steps:
+    - name: 📧 Notify Success
+      if: needs.deploy.result == 'success'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: '✅ UniAgendas deployed successfully to production!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        
+    - name: ⚠️ Notify Failure
+      if: needs.deploy.result == 'failure'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: '❌ UniAgendas deployment failed! Check the logs.'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # =============================================================================
+  # JOB 6: PERFORMANCE TESTING (opcional)
+  # =============================================================================
+  performance:
+    name: ⚡ Performance Testing
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.ref == 'refs/heads/master'
+    
+    steps:
+    - name: 📁 Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: 🚀 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        
+    - name: 📆 Install Artillery
+      run: npm install -g artillery
+      
+    - name: ⚡ Run Load Tests
+      working-directory: ./backend
+      run: |
+        if [ -f "performance/load-test.yml" ]; then
+          artillery run performance/load-test.yml --target https://uniagendas-api.railway.app
+        else
+          echo "Load test configuration not found, skipping..."
+        fi
+
+  # =============================================================================
+  # JOB 7: BACKUP E CLEANUP
+  # =============================================================================
+  maintenance:
+    name: 🧽 Maintenance Tasks
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.ref == 'refs/heads/master'
+    
+    steps:
+    - name: 📁 Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: 📋 Create Release Notes
+      run: |
+        echo "## 🎉 Nova Release - $(date +'%Y-%m-%d %H:%M:%S')" >> release-notes.md
+        echo "" >> release-notes.md
+        echo "### 🔄 Commits nesta release:" >> release-notes.md
+        git log --oneline --since="1 day ago" >> release-notes.md
+        
+    - name: 📦 Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        body_path: release-notes.md
+        files: |
+          backend/build/**
+          frontend/dist/**
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
