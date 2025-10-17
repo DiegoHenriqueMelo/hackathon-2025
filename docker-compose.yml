@@ -1,0 +1,353 @@
+version: '3.8'
+
+# ====================================================
+# UNIAGENDAS - AMBIENTE COMPLETO COM DOCKER COMPOSE
+# ====================================================
+# Este arquivo configura todo o ambiente de desenvolvimento
+# incluindo backend, frontend, banco de dados e ferramentas
+# ====================================================
+
+services:
+  # ====================================================
+  # BANCO DE DADOS POSTGRESQL
+  # ====================================================
+  database:
+    image: postgres:13-alpine
+    container_name: uniagendas-db
+    restart: unless-stopped
+    
+    environment:
+      POSTGRES_DB: uniagendas
+      POSTGRES_USER: uniagendas_user
+      POSTGRES_PASSWORD: uniagendas_pass
+      PGDATA: /var/lib/postgresql/data/pgdata
+      
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/setup-database.sql:/docker-entrypoint-initdb.d/01-setup.sql
+      
+    ports:
+      - "5432:5432"
+      
+    networks:
+      - uniagendas-network
+      
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uniagendas_user -d uniagendas"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ====================================================
+  # REDIS PARA CACHE (OPCIONAL)
+  # ====================================================
+  redis:
+    image: redis:7-alpine
+    container_name: uniagendas-redis
+    restart: unless-stopped
+    
+    command: redis-server --appendonly yes --requirepass redis_pass
+    
+    volumes:
+      - redis_data:/data
+      
+    ports:
+      - "6379:6379"
+      
+    networks:
+      - uniagendas-network
+      
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ====================================================
+  # BACKEND API (NODE.JS + TYPESCRIPT)
+  # ====================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+      
+    container_name: uniagendas-backend
+    restart: unless-stopped
+    
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      
+      # Database
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: uniagendas
+      DB_USER: uniagendas_user
+      DB_PASSWORD: uniagendas_pass
+      
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: redis_pass
+      
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-seu_jwt_secret_super_seguro}
+      JWT_EXPIRES_IN: 24h
+      
+      # OpenAI
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: gpt-4o-mini
+      
+      # Upload
+      MAX_FILE_SIZE: 10485760
+      UPLOAD_PATH: /app/uploads
+      
+      # CORS
+      FRONTEND_URL: http://localhost:5173
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173,http://frontend:5173
+      
+    volumes:
+      - backend_uploads:/app/uploads
+      - backend_logs:/app/logs
+      
+    ports:
+      - "3000:3000"
+      
+    networks:
+      - uniagendas-network
+      
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+        
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => { process.exit(1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ====================================================
+  # FRONTEND (REACT + VITE)
+  # ====================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3000
+        
+    container_name: uniagendas-frontend
+    restart: unless-stopped
+    
+    environment:
+      NODE_ENV: production
+      
+    ports:
+      - "5173:80"
+      
+    networks:
+      - uniagendas-network
+      
+    depends_on:
+      backend:
+        condition: service_healthy
+        
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ====================================================
+  # NGINX REVERSE PROXY (OPCIONAL)
+  # ====================================================
+  nginx:
+    image: nginx:alpine
+    container_name: uniagendas-nginx
+    restart: unless-stopped
+    
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      
+    ports:
+      - "80:80"
+      - "443:443"
+      
+    networks:
+      - uniagendas-network
+      
+    depends_on:
+      - backend
+      - frontend
+    
+    # Descomente se quiser usar nginx
+    # profiles: ["nginx"]
+
+  # ====================================================
+  # PGADMIN PARA ADMINISTRAÇÃO DO BANCO (DESENVOLVIMENTO)
+  # ====================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: uniagendas-pgadmin
+    restart: unless-stopped
+    
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@uniagendas.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      
+    ports:
+      - "8080:80"
+      
+    networks:
+      - uniagendas-network
+      
+    depends_on:
+      - database
+    
+    # Usar apenas em desenvolvimento
+    profiles: ["dev"]
+
+  # ====================================================
+  # ADMINER - ALTERNATIVA LEVE AO PGADMIN
+  # ====================================================
+  adminer:
+    image: adminer:latest
+    container_name: uniagendas-adminer
+    restart: unless-stopped
+    
+    environment:
+      ADMINER_DEFAULT_SERVER: database
+      
+    ports:
+      - "8081:8080"
+      
+    networks:
+      - uniagendas-network
+      
+    depends_on:
+      - database
+    
+    # Usar apenas em desenvolvimento
+    profiles: ["dev"]
+
+  # ====================================================
+  # MONITORING COM GRAFANA + PROMETHEUS (OPCIONAL)
+  # ====================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: uniagendas-prometheus
+    restart: unless-stopped
+    
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+      
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      
+    ports:
+      - "9090:9090"
+      
+    networks:
+      - uniagendas-network
+    
+    # Usar apenas para monitoramento
+    profiles: ["monitoring"]
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: uniagendas-grafana
+    restart: unless-stopped
+    
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      
+    volumes:
+      - grafana_data:/var/lib/grafana
+      
+    ports:
+      - "3001:3000"
+      
+    networks:
+      - uniagendas-network
+      
+    depends_on:
+      - prometheus
+    
+    # Usar apenas para monitoramento
+    profiles: ["monitoring"]
+
+# ====================================================
+# VOLUMES PERSISTENTES
+# ====================================================
+volumes:
+  postgres_data:
+    driver: local
+    
+  redis_data:
+    driver: local
+    
+  backend_uploads:
+    driver: local
+    
+  backend_logs:
+    driver: local
+    
+  pgadmin_data:
+    driver: local
+    
+  prometheus_data:
+    driver: local
+    
+  grafana_data:
+    driver: local
+
+# ====================================================
+# REDES
+# ====================================================
+networks:
+  uniagendas-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ====================================================
+# COMANDOS ÚTEIS
+# ====================================================
+# 
+# Iniciar apenas os serviços principais:
+# docker-compose up -d database redis backend frontend
+#
+# Iniciar com ferramentas de desenvolvimento:
+# docker-compose --profile dev up -d
+#
+# Iniciar com monitoramento:
+# docker-compose --profile monitoring up -d
+#
+# Ver logs do backend:
+# docker-compose logs -f backend
+#
+# Executar migrações do banco:
+# docker-compose exec backend npm run migrate
+#
+# Backup do banco:
+# docker-compose exec database pg_dump -U uniagendas_user uniagendas > backup.sql
+#
+# Restaurar backup:
+# docker-compose exec -T database psql -U uniagendas_user uniagendas < backup.sql
+#
+# ====================================================
